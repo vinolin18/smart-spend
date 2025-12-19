@@ -16,6 +16,18 @@ export const loadTransactions = (): Transaction[] => {
   return data ? JSON.parse(data) : [];
 };
 
+// Merge two sets of transactions based on unique ID
+export const mergeTransactions = (local: Transaction[], remote: Transaction[]): Transaction[] => {
+  const map = new Map<string, Transaction>();
+  // Local records take priority if timestamps were implemented, 
+  // but for now we just ensure uniqueness.
+  remote.forEach(t => map.set(t.id, t));
+  local.forEach(t => map.set(t.id, t));
+  return Array.from(map.values()).sort((a, b) => 
+    new Date(b.date).getTime() - new Date(a.date).getTime()
+  );
+};
+
 export const saveSettings = (settings: MasterSetting[]) => {
   localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
 };

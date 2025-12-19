@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
 import { MasterSetting, RecordType, AppConfig } from '../types';
-import { Plus, Edit2, X, Check, Cloud, RefreshCw, Info } from 'lucide-react';
+import { Plus, Edit2, X, Check, Cloud, RefreshCw, Info, ExternalLink } from 'lucide-react';
 
 interface SettingsProps {
   settings: MasterSetting[];
@@ -59,18 +59,25 @@ export const Settings: React.FC<SettingsProps> = ({ settings, onUpdate, config, 
     <div className="space-y-6 pb-20">
       {/* Cloud Sync Section */}
       <section className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-        <div className="flex items-center gap-2 mb-4">
-          <Cloud className="w-5 h-5 text-indigo-600" />
-          <h3 className="text-lg font-bold text-slate-800">Google Sheets Sync</h3>
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <Cloud className="w-5 h-5 text-indigo-600" />
+            <h3 className="text-lg font-bold text-slate-800">Cloud Sync</h3>
+          </div>
+          {config.lastSync && (
+            <span className="text-[9px] font-bold text-slate-400 bg-slate-50 px-2 py-1 rounded-lg">
+              Last Sync: {new Date(config.lastSync).toLocaleTimeString()}
+            </span>
+          )}
         </div>
         
         <div className="space-y-4">
           <div>
-            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Web App URL</label>
+            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Google Apps Script URL</label>
             <div className="flex gap-2">
               <input 
                 className="flex-1 bg-slate-50 border-none rounded-xl p-3 text-sm focus:ring-2 focus:ring-indigo-500"
-                placeholder="https://script.google.com/macros/s/..."
+                placeholder="https://script.google.com/..."
                 value={sheetUrl}
                 onChange={e => {
                   setSheetUrl(e.target.value);
@@ -89,11 +96,21 @@ export const Settings: React.FC<SettingsProps> = ({ settings, onUpdate, config, 
             </div>
           </div>
           
-          <div className="p-3 bg-slate-50 rounded-xl flex gap-2 items-start">
-            <Info className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
-            <p className="text-[10px] text-slate-500 leading-normal">
-              Deploy a Google Apps Script as a Web App to link your sheet. This pushes all local transactions to the spreadsheet and keeps them safe.
+          <div className="p-4 bg-indigo-50 rounded-2xl">
+            <div className="flex gap-2 items-start mb-2">
+              <Info className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
+              <p className="text-[10px] font-bold text-indigo-900 uppercase tracking-wider">Multi-User Sync Setup</p>
+            </div>
+            <p className="text-[10px] text-indigo-700 leading-relaxed">
+              To sync between phones, your Apps Script must support <strong>doGet</strong> (to send data back to the phone) and <strong>doPost</strong> (to save data from the phone). 
             </p>
+            <a 
+              href="https://developers.google.com/apps-script/guides/web" 
+              target="_blank" 
+              className="text-[9px] text-indigo-500 font-bold flex items-center gap-1 mt-2 hover:underline"
+            >
+              Learn about Apps Script <ExternalLink className="w-3 h-3" />
+            </a>
           </div>
         </div>
       </section>

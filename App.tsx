@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   RecordType, Transaction, MasterSetting, AppTab, CategorySummary, AppConfig 
 } from './types';
@@ -8,7 +8,7 @@ import {
   loadTransactions, saveTransactions, 
   loadSettings, saveSettings, 
   loadAppConfig, saveAppConfig,
-  downloadCSV 
+  downloadCSV, mergeTransactions
 } from './utils/storage';
 import { Dashboard } from './components/Dashboard';
 import { Transactions } from './components/Transactions';
@@ -19,13 +19,13 @@ import { AddTransactionModal } from './components/AddTransactionModal';
 import { 
   LayoutDashboard, 
   ReceiptText, 
-  BarChart3, 
   Settings as SettingsIcon,
   Plus,
   Download,
   TrendingUp,
   ChevronDown,
-  CloudLightning
+  CloudLightning,
+  RefreshCcw
 } from 'lucide-react';
 
 const App: React.FC = () => {
@@ -39,6 +39,7 @@ const App: React.FC = () => {
   const todayKey = new Date().toLocaleString('default', { month: 'short', year: 'numeric' }).replace(' ', '-');
   const [selectedMonth, setSelectedMonth] = useState(todayKey);
 
+  // Initial Data Load
   useEffect(() => {
     const storedTransactions = loadTransactions();
     const storedSettings = loadSettings();
@@ -53,16 +54,49 @@ const App: React.FC = () => {
       setSettings(DEFAULT_MASTER_SETTINGS);
       saveSettings(DEFAULT_MASTER_SETTINGS);
     }
+
+    // Auto-pull from cloud on startup
+    if (storedConfig.googleSheetUrl) {
+      pullFromCloud(storedConfig.googleSheetUrl, storedTransactions, storedSettings);
+    }
   }, []);
 
-  const performSync = async (txs: Transaction[], sets: MasterSetting[]) => {
+  const pullFromCloud = async (url: string, currentTxs: Transaction[], currentSets: MasterSetting[]) => {
+    if (!url) return;
+    setIsSyncing(true);
+    try {
+      // Expects Google Apps Script to handle GET by returning JSON
+      const response = await fetch(url);
+      const cloudData = await response.json();
+      
+      if (cloudData.transactions) {
+        const mergedTxs = mergeTransactions(currentTxs, cloudData.transactions);
+        setTransactions(mergedTxs);
+        saveTransactions(mergedTxs);
+      }
+      
+      if (cloudData.settings && cloudData.settings.length > 0) {
+        setSettings(cloudData.settings);
+        saveSettings(cloudData.settings);
+      }
+
+      const newConfig = { ...config, lastSync: new Date().toISOString() };
+      setConfig(newConfig);
+      saveAppConfig(newConfig);
+    } catch (error) {
+      console.warn('Cloud pull failed. Check your Apps Script deployment.', error);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const pushToCloud = async (txs: Transaction[], sets: MasterSetting[]) => {
     if (!config.googleSheetUrl) return;
-    
     setIsSyncing(true);
     try {
       await fetch(config.googleSheetUrl, {
         method: 'POST',
-        mode: 'no-cors',
+        mode: 'no-cors', // standard for Apps Script web apps
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'sync',
@@ -76,7 +110,7 @@ const App: React.FC = () => {
       setConfig(newConfig);
       saveAppConfig(newConfig);
     } catch (error) {
-      console.error('Auto-sync failed', error);
+      console.error('Cloud push failed', error);
     } finally {
       setIsSyncing(false);
     }
@@ -86,20 +120,20 @@ const App: React.FC = () => {
     const updated = [t, ...transactions];
     setTransactions(updated);
     saveTransactions(updated);
-    performSync(updated, settings);
+    pushToCloud(updated, settings);
   };
 
   const handleDeleteTransaction = (id: string) => {
     const updated = transactions.filter(t => t.id !== id);
     setTransactions(updated);
     saveTransactions(updated);
-    performSync(updated, settings);
+    pushToCloud(updated, settings);
   };
 
   const handleUpdateSettings = (newSettings: MasterSetting[]) => {
     setSettings(newSettings);
     saveSettings(newSettings);
-    performSync(transactions, newSettings);
+    pushToCloud(transactions, newSettings);
   };
 
   const handleUpdateConfig = (newConfig: AppConfig) => {
@@ -112,8 +146,9 @@ const App: React.FC = () => {
       alert('Please provide a Google Sheet URL in Setup first.');
       return;
     }
-    await performSync(transactions, settings);
-    alert('Cloud sync completed!');
+    // Pull first, then push latest merged state
+    await pullFromCloud(config.googleSheetUrl, transactions, settings);
+    await pushToCloud(transactions, settings);
   };
 
   const monthList = useMemo(() => {
@@ -185,6 +220,12 @@ const App: React.FC = () => {
         </div>
         
         <div className="flex gap-2 pt-safe">
+          <button 
+            onClick={handleManualSync}
+            className={`p-2.5 rounded-xl transition-all ${isSyncing ? 'bg-indigo-50 text-indigo-400' : 'bg-slate-50 text-slate-400 hover:text-indigo-600'}`}
+          >
+            <RefreshCcw className={`w-5 h-5 ${isSyncing ? 'animate-spin' : ''}`} />
+          </button>
           {(activeTab === 'dashboard' || activeTab === 'transactions' || activeTab === 'summary') && (
             <button 
               onClick={handleDownload}
@@ -212,7 +253,6 @@ const App: React.FC = () => {
         )}
       </main>
 
-      {/* Bottom Nav Optimized for Mobile */}
       <nav className="fixed bottom-0 left-0 right-0 max-w-lg mx-auto bg-white/95 backdrop-blur-md border-t border-slate-100 flex justify-around items-center h-20 px-2 z-40 pb-safe shadow-[0_-4px_10px_rgba(0,0,0,0.03)]">
         <NavButton active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} icon={<LayoutDashboard />} label="Board" />
         <NavButton active={activeTab === 'trends'} onClick={() => setActiveTab('trends')} icon={<TrendingUp />} label="Trends" />
