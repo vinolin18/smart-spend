@@ -19,10 +19,17 @@ export const loadTransactions = (): Transaction[] => {
 // Merge two sets of transactions based on unique ID
 export const mergeTransactions = (local: Transaction[], remote: Transaction[]): Transaction[] => {
   const map = new Map<string, Transaction>();
-  // Local records take priority if timestamps were implemented, 
-  // but for now we just ensure uniqueness.
-  remote.forEach(t => map.set(t.id, t));
-  local.forEach(t => map.set(t.id, t));
+  
+  // Add remote first
+  remote.forEach(t => {
+    if (t && t.id) map.set(t.id, t);
+  });
+  
+  // Local records take priority if there's a collision (same ID)
+  local.forEach(t => {
+    if (t && t.id) map.set(t.id, t);
+  });
+
   return Array.from(map.values()).sort((a, b) => 
     new Date(b.date).getTime() - new Date(a.date).getTime()
   );

@@ -25,7 +25,8 @@ import {
   TrendingUp,
   ChevronDown,
   CloudLightning,
-  RefreshCcw
+  RefreshCcw,
+  AlertTriangle
 } from 'lucide-react';
 
 const App: React.FC = () => {
@@ -35,11 +36,12 @@ const App: React.FC = () => {
   const [config, setConfig] = useState<AppConfig>({ googleSheetUrl: '' });
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isInitialLoadDone, setIsInitialLoadDone] = useState(false);
   
   const todayKey = new Date().toLocaleString('default', { month: 'short', year: 'numeric' }).replace(' ', '-');
   const [selectedMonth, setSelectedMonth] = useState(todayKey);
 
-  // Initial Data Load
+  // Load local data immediately on mount
   useEffect(() => {
     const storedTransactions = loadTransactions();
     const storedSettings = loadSettings();
@@ -55,101 +57,121 @@ const App: React.FC = () => {
       saveSettings(DEFAULT_MASTER_SETTINGS);
     }
 
-    // Auto-pull from cloud on startup
+    // Initial sync
     if (storedConfig.googleSheetUrl) {
-      pullFromCloud(storedConfig.googleSheetUrl, storedTransactions, storedSettings);
+      performFullSync(storedConfig.googleSheetUrl, storedTransactions, storedSettings)
+        .finally(() => setIsInitialLoadDone(true));
+    } else {
+      setIsInitialLoadDone(true);
     }
   }, []);
 
-  const pullFromCloud = async (url: string, currentTxs: Transaction[], currentSets: MasterSetting[]) => {
+  /**
+   * The "Golden Rule" for Multi-User Sync:
+   * 1. Pull latest from Cloud
+   * 2. Merge with local state
+   * 3. Apply the user's change (if any)
+   * 4. Save Locally
+   * 5. Push result to Cloud
+   */
+  const performFullSync = async (
+    url: string, 
+    currentLocalTxs: Transaction[], 
+    currentLocalSets: MasterSetting[],
+    actionToApply?: { 
+      txUpdate?: (txs: Transaction[]) => Transaction[], 
+      setUpdate?: (sets: MasterSetting[]) => MasterSetting[] 
+    }
+  ) => {
     if (!url) return;
     setIsSyncing(true);
-    try {
-      // Expects Google Apps Script to handle GET by returning JSON
-      const response = await fetch(url);
-      const cloudData = await response.json();
-      
-      if (cloudData.transactions) {
-        const mergedTxs = mergeTransactions(currentTxs, cloudData.transactions);
-        setTransactions(mergedTxs);
-        saveTransactions(mergedTxs);
-      }
-      
-      if (cloudData.settings && cloudData.settings.length > 0) {
-        setSettings(cloudData.settings);
-        saveSettings(cloudData.settings);
-      }
+    
+    let latestTxs = [...currentLocalTxs];
+    let latestSets = [...currentLocalSets];
 
+    try {
+      // 1. PULL
+      const response = await fetch(url);
+      if (response.ok) {
+        const cloudData = await response.json();
+        
+        // 2. MERGE
+        if (cloudData.transactions) {
+          latestTxs = mergeTransactions(currentLocalTxs, cloudData.transactions);
+        }
+        if (cloudData.settings && cloudData.settings.length > 0) {
+          latestSets = cloudData.settings; // Settings usually overwrite for simplicity
+        }
+      }
+    } catch (error) {
+      console.warn("Pull failed, proceeding with local merge only.", error);
+    }
+
+    // 3. APPLY CHANGE
+    if (actionToApply?.txUpdate) {
+      latestTxs = actionToApply.txUpdate(latestTxs);
+    }
+    if (actionToApply?.setUpdate) {
+      latestSets = actionToApply.setUpdate(latestSets);
+    }
+
+    // 4. SAVE LOCALLY
+    setTransactions(latestTxs);
+    setSettings(latestSets);
+    saveTransactions(latestTxs);
+    saveSettings(latestSets);
+
+    // 5. PUSH
+    try {
+      await fetch(url, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'sync',
+          transactions: latestTxs,
+          settings: latestSets
+        })
+      });
+      
       const newConfig = { ...config, lastSync: new Date().toISOString() };
       setConfig(newConfig);
       saveAppConfig(newConfig);
     } catch (error) {
-      console.warn('Cloud pull failed. Check your Apps Script deployment.', error);
-    } finally {
-      setIsSyncing(false);
-    }
-  };
-
-  const pushToCloud = async (txs: Transaction[], sets: MasterSetting[]) => {
-    if (!config.googleSheetUrl) return;
-    setIsSyncing(true);
-    try {
-      await fetch(config.googleSheetUrl, {
-        method: 'POST',
-        mode: 'no-cors', // standard for Apps Script web apps
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'sync',
-          transactions: txs,
-          settings: sets
-        })
-      });
-      
-      const now = new Date().toISOString();
-      const newConfig = { ...config, lastSync: now };
-      setConfig(newConfig);
-      saveAppConfig(newConfig);
-    } catch (error) {
-      console.error('Cloud push failed', error);
+      console.error("Push failed", error);
     } finally {
       setIsSyncing(false);
     }
   };
 
   const handleAddTransaction = (t: Transaction) => {
-    const updated = [t, ...transactions];
-    setTransactions(updated);
-    saveTransactions(updated);
-    pushToCloud(updated, settings);
+    performFullSync(config.googleSheetUrl, transactions, settings, {
+      txUpdate: (current) => [t, ...current]
+    });
   };
 
   const handleDeleteTransaction = (id: string) => {
-    const updated = transactions.filter(t => t.id !== id);
-    setTransactions(updated);
-    saveTransactions(updated);
-    pushToCloud(updated, settings);
+    performFullSync(config.googleSheetUrl, transactions, settings, {
+      txUpdate: (current) => current.filter(t => t.id !== id)
+    });
   };
 
   const handleUpdateSettings = (newSettings: MasterSetting[]) => {
-    setSettings(newSettings);
-    saveSettings(newSettings);
-    pushToCloud(transactions, newSettings);
+    performFullSync(config.googleSheetUrl, transactions, settings, {
+      setUpdate: () => newSettings
+    });
   };
 
   const handleUpdateConfig = (newConfig: AppConfig) => {
     setConfig(newConfig);
     saveAppConfig(newConfig);
+    // If URL changed, sync immediately
+    if (newConfig.googleSheetUrl) {
+      performFullSync(newConfig.googleSheetUrl, transactions, settings);
+    }
   };
 
-  const handleManualSync = async () => {
-    if (!config.googleSheetUrl) {
-      alert('Please provide a Google Sheet URL in Setup first.');
-      return;
-    }
-    // Pull first, then push latest merged state
-    await pullFromCloud(config.googleSheetUrl, transactions, settings);
-    await pushToCloud(transactions, settings);
-  };
+  const handleManualSync = () => performFullSync(config.googleSheetUrl, transactions, settings);
 
   const monthList = useMemo(() => {
     const list = new Set<string>();
@@ -222,6 +244,7 @@ const App: React.FC = () => {
         <div className="flex gap-2 pt-safe">
           <button 
             onClick={handleManualSync}
+            disabled={isSyncing}
             className={`p-2.5 rounded-xl transition-all ${isSyncing ? 'bg-indigo-50 text-indigo-400' : 'bg-slate-50 text-slate-400 hover:text-indigo-600'}`}
           >
             <RefreshCcw className={`w-5 h-5 ${isSyncing ? 'animate-spin' : ''}`} />
@@ -236,6 +259,14 @@ const App: React.FC = () => {
           )}
         </div>
       </header>
+
+      {/* Warning if sync URL is missing */}
+      {!config.googleSheetUrl && isInitialLoadDone && activeTab !== 'settings' && (
+        <div className="bg-amber-50 border-b border-amber-100 px-6 py-2 flex items-center gap-2">
+          <AlertTriangle className="w-3 h-3 text-amber-600" />
+          <p className="text-[10px] font-bold text-amber-700 uppercase">Offline Mode: Sync URL not set in Setup</p>
+        </div>
+      )}
 
       <main className="flex-1 p-6 overflow-y-auto overflow-x-hidden">
         {activeTab === 'dashboard' && <Dashboard summary={categorySummary} transactions={filteredTransactions} />}
@@ -259,10 +290,15 @@ const App: React.FC = () => {
         
         <div className="relative -top-8">
           <button 
+            disabled={!isInitialLoadDone || isSyncing}
             onClick={() => setIsModalOpen(true)}
-            className="w-16 h-16 bg-indigo-600 text-white rounded-3xl shadow-xl shadow-indigo-300 flex items-center justify-center transition-all hover:scale-105 active:scale-90 border-4 border-white"
+            className={`w-16 h-16 rounded-3xl shadow-xl flex items-center justify-center transition-all border-4 border-white ${
+              !isInitialLoadDone || isSyncing 
+              ? 'bg-slate-300 text-slate-100' 
+              : 'bg-indigo-600 text-white shadow-indigo-300 hover:scale-105 active:scale-90'
+            }`}
           >
-            <Plus className="w-8 h-8" />
+            <Plus className={`w-8 h-8 ${isSyncing ? 'animate-pulse' : ''}`} />
           </button>
         </div>
 
