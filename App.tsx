@@ -34,8 +34,8 @@ import {
 } from 'lucide-react';
 
 const USERS: User[] = [
-  { id: 'user_a', name: 'User A' },
-  { id: 'user_b', name: 'User B' }
+  { id: 'user_1', name: 'vinolin18' },
+  { id: 'user_2', name: 'robin27' }
 ];
 
 const App: React.FC = () => {
@@ -103,11 +103,11 @@ const App: React.FC = () => {
     try {
       const response = await fetch(url);
       if (response.ok) {
-        const cloudData = await response.json();
-        if (cloudData.transactions) {
+        const cloudData = await response.ok ? await response.json() : null;
+        if (cloudData && cloudData.transactions) {
           latestTxs = mergeTransactions(currentLocalTxs, cloudData.transactions);
         }
-        if (cloudData.settings && cloudData.settings.length > 0) {
+        if (cloudData && cloudData.settings && cloudData.settings.length > 0) {
           latestSets = cloudData.settings;
         }
       }
