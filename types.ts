@@ -5,6 +5,11 @@ export enum RecordType {
   INVESTMENT = 'Investment'
 }
 
+export interface User {
+  id: string;
+  name: string;
+}
+
 export interface MasterSetting {
   id: string;
   recordType: RecordType;
@@ -19,6 +24,8 @@ export interface MasterSetting {
 export interface Transaction {
   id: string;
   date: string;
+  userId: string; // The user who created this record
+  userName: string; // Friendly name for display
   recordType: RecordType;
   mainCategory: string;
   subCategory: string;
@@ -42,4 +49,5 @@ export type AppTab = 'dashboard' | 'trends' | 'transactions' | 'summary' | 'sett
 export interface AppConfig {
   googleSheetUrl: string;
   lastSync?: string;
+  theme: 'light' | 'dark';
 }

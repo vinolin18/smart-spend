@@ -1,7 +1,7 @@
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
-  RecordType, Transaction, MasterSetting, AppTab, CategorySummary, AppConfig 
+  RecordType, Transaction, MasterSetting, AppTab, CategorySummary, AppConfig, User 
 } from './types';
 import { DEFAULT_MASTER_SETTINGS } from './constants';
 import { 
@@ -16,6 +16,7 @@ import { Summary } from './components/Summary';
 import { Settings } from './components/Settings';
 import { Trends } from './components/Trends';
 import { AddTransactionModal } from './components/AddTransactionModal';
+import { Login } from './components/Login';
 import { 
   LayoutDashboard, 
   ReceiptText, 
@@ -26,14 +27,29 @@ import {
   ChevronDown,
   CloudLightning,
   RefreshCcw,
-  AlertTriangle
+  AlertTriangle,
+  LogOut,
+  Moon,
+  Sun
 } from 'lucide-react';
+
+const USERS: User[] = [
+  { id: 'user_a', name: 'User A' },
+  { id: 'user_b', name: 'User B' }
+];
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<AppTab>('dashboard');
+  const [currentUser, setCurrentUser] = useState<User | null>(() => {
+    const saved = localStorage.getItem('smartspend_user');
+    return saved ? JSON.parse(saved) : null;
+  });
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [settings, setSettings] = useState<MasterSetting[]>([]);
-  const [config, setConfig] = useState<AppConfig>({ googleSheetUrl: '' });
+  const [config, setConfig] = useState<AppConfig>(() => {
+    const saved = loadAppConfig();
+    return { ...saved, theme: saved.theme || 'light' };
+  });
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isInitialLoadDone, setIsInitialLoadDone] = useState(false);
@@ -41,14 +57,21 @@ const App: React.FC = () => {
   const todayKey = new Date().toLocaleString('default', { month: 'short', year: 'numeric' }).replace(' ', '-');
   const [selectedMonth, setSelectedMonth] = useState(todayKey);
 
-  // Load local data immediately on mount
+  // Apply theme to body
+  useEffect(() => {
+    if (config.theme === 'dark') {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [config.theme]);
+
+  // Initial Data Load
   useEffect(() => {
     const storedTransactions = loadTransactions();
     const storedSettings = loadSettings();
-    const storedConfig = loadAppConfig();
     
     setTransactions(storedTransactions);
-    setConfig(storedConfig);
     
     if (storedSettings.length > 0) {
       setSettings(storedSettings);
@@ -57,23 +80,14 @@ const App: React.FC = () => {
       saveSettings(DEFAULT_MASTER_SETTINGS);
     }
 
-    // Initial sync
-    if (storedConfig.googleSheetUrl) {
-      performFullSync(storedConfig.googleSheetUrl, storedTransactions, storedSettings)
+    if (config.googleSheetUrl) {
+      performFullSync(config.googleSheetUrl, storedTransactions, storedSettings)
         .finally(() => setIsInitialLoadDone(true));
     } else {
       setIsInitialLoadDone(true);
     }
-  }, []);
+  }, [config.googleSheetUrl]);
 
-  /**
-   * The "Golden Rule" for Multi-User Sync:
-   * 1. Pull latest from Cloud
-   * 2. Merge with local state
-   * 3. Apply the user's change (if any)
-   * 4. Save Locally
-   * 5. Push result to Cloud
-   */
   const performFullSync = async (
     url: string, 
     currentLocalTxs: Transaction[], 
@@ -90,38 +104,28 @@ const App: React.FC = () => {
     let latestSets = [...currentLocalSets];
 
     try {
-      // 1. PULL
       const response = await fetch(url);
       if (response.ok) {
         const cloudData = await response.json();
-        
-        // 2. MERGE
         if (cloudData.transactions) {
           latestTxs = mergeTransactions(currentLocalTxs, cloudData.transactions);
         }
         if (cloudData.settings && cloudData.settings.length > 0) {
-          latestSets = cloudData.settings; // Settings usually overwrite for simplicity
+          latestSets = cloudData.settings;
         }
       }
     } catch (error) {
-      console.warn("Pull failed, proceeding with local merge only.", error);
+      console.warn("Pull failed, using local merge.");
     }
 
-    // 3. APPLY CHANGE
-    if (actionToApply?.txUpdate) {
-      latestTxs = actionToApply.txUpdate(latestTxs);
-    }
-    if (actionToApply?.setUpdate) {
-      latestSets = actionToApply.setUpdate(latestSets);
-    }
+    if (actionToApply?.txUpdate) latestTxs = actionToApply.txUpdate(latestTxs);
+    if (actionToApply?.setUpdate) latestSets = actionToApply.setUpdate(latestSets);
 
-    // 4. SAVE LOCALLY
     setTransactions(latestTxs);
     setSettings(latestSets);
     saveTransactions(latestTxs);
     saveSettings(latestSets);
 
-    // 5. PUSH
     try {
       await fetch(url, {
         method: 'POST',
@@ -145,12 +149,26 @@ const App: React.FC = () => {
   };
 
   const handleAddTransaction = (t: Transaction) => {
+    if (!currentUser) return;
+    const enrichedTransaction = { 
+      ...t, 
+      userId: currentUser.id, 
+      userName: currentUser.name 
+    };
     performFullSync(config.googleSheetUrl, transactions, settings, {
-      txUpdate: (current) => [t, ...current]
+      txUpdate: (current) => [enrichedTransaction, ...current]
     });
   };
 
   const handleDeleteTransaction = (id: string) => {
+    const tx = transactions.find(t => t.id === id);
+    if (!tx || !currentUser) return;
+    
+    if (tx.userId !== currentUser.id) {
+      alert("You can only delete your own records!");
+      return;
+    }
+
     performFullSync(config.googleSheetUrl, transactions, settings, {
       txUpdate: (current) => current.filter(t => t.id !== id)
     });
@@ -165,13 +183,22 @@ const App: React.FC = () => {
   const handleUpdateConfig = (newConfig: AppConfig) => {
     setConfig(newConfig);
     saveAppConfig(newConfig);
-    // If URL changed, sync immediately
-    if (newConfig.googleSheetUrl) {
-      performFullSync(newConfig.googleSheetUrl, transactions, settings);
-    }
   };
 
-  const handleManualSync = () => performFullSync(config.googleSheetUrl, transactions, settings);
+  const handleLogin = (user: User) => {
+    setCurrentUser(user);
+    localStorage.setItem('smartspend_user', JSON.stringify(user));
+  };
+
+  const handleLogout = () => {
+    setCurrentUser(null);
+    localStorage.removeItem('smartspend_user');
+  };
+
+  const toggleTheme = () => {
+    const newTheme = config.theme === 'light' ? 'dark' : 'light';
+    handleUpdateConfig({ ...config, theme: newTheme });
+  };
 
   const monthList = useMemo(() => {
     const list = new Set<string>();
@@ -208,23 +235,22 @@ const App: React.FC = () => {
     });
   }, [filteredTransactions, settings]);
 
-  const handleDownload = () => {
-    if (activeTab === 'transactions') {
-      downloadCSV(filteredTransactions, `transactions_${selectedMonth}`);
-    } else {
-      downloadCSV(categorySummary, `summary_${selectedMonth}`);
-    }
-  };
+  if (!currentUser) {
+    return <Login users={USERS} onLogin={handleLogin} />;
+  }
 
   return (
-    <div className="min-h-screen max-w-lg mx-auto bg-slate-50 flex flex-col relative shadow-xl shadow-slate-200">
-      <header className="sticky top-0 z-30 bg-white px-6 py-4 border-b border-slate-100 flex justify-between items-center shadow-sm">
+    <div className="min-h-screen max-w-lg mx-auto bg-slate-50 dark:bg-slate-950 flex flex-col relative shadow-xl shadow-slate-200 dark:shadow-none transition-colors">
+      <header className="sticky top-0 z-30 bg-white dark:bg-slate-900 px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center shadow-sm">
         <div className="pt-safe">
-          <h1 className="text-xl font-black text-slate-800 tracking-tight">SmartSpend</h1>
+          <h1 className="text-xl font-black text-slate-800 dark:text-slate-100 tracking-tight flex items-center gap-2">
+            SmartSpend
+            <span className="text-[10px] bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-400 px-1.5 py-0.5 rounded-md font-bold uppercase tracking-widest">PRO</span>
+          </h1>
           <div className="flex items-center gap-2 mt-1">
             <div className="relative inline-block">
               <select 
-                className="appearance-none bg-indigo-50 text-indigo-600 text-[10px] font-bold py-1 px-3 pr-6 rounded-full border-none focus:ring-1 focus:ring-indigo-300"
+                className="appearance-none bg-indigo-50 dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 text-[10px] font-bold py-1 px-3 pr-6 rounded-full border-none focus:ring-1 focus:ring-indigo-300"
                 value={selectedMonth}
                 onChange={e => setSelectedMonth(e.target.value)}
               >
@@ -235,7 +261,7 @@ const App: React.FC = () => {
             {isSyncing && (
               <div className="flex items-center gap-1 animate-pulse">
                 <CloudLightning className="w-3 h-3 text-amber-500" />
-                <span className="text-[8px] font-bold text-slate-400 uppercase">Syncing...</span>
+                <span className="text-[8px] font-bold text-slate-400 dark:text-slate-500 uppercase">Syncing...</span>
               </div>
             )}
           </div>
@@ -243,35 +269,32 @@ const App: React.FC = () => {
         
         <div className="flex gap-2 pt-safe">
           <button 
-            onClick={handleManualSync}
+            onClick={toggleTheme}
+            className="p-2.5 bg-slate-50 dark:bg-slate-800 text-slate-400 dark:text-slate-500 rounded-xl hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
+          >
+            {config.theme === 'light' ? <Moon size={20} /> : <Sun size={20} />}
+          </button>
+          <button 
+            onClick={() => performFullSync(config.googleSheetUrl, transactions, settings)}
             disabled={isSyncing}
-            className={`p-2.5 rounded-xl transition-all ${isSyncing ? 'bg-indigo-50 text-indigo-400' : 'bg-slate-50 text-slate-400 hover:text-indigo-600'}`}
+            className={`p-2.5 rounded-xl transition-all ${isSyncing ? 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-400' : 'bg-slate-50 dark:bg-slate-800 text-slate-400 dark:text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400'}`}
           >
             <RefreshCcw className={`w-5 h-5 ${isSyncing ? 'animate-spin' : ''}`} />
           </button>
-          {(activeTab === 'dashboard' || activeTab === 'transactions' || activeTab === 'summary') && (
-            <button 
-              onClick={handleDownload}
-              className="p-2.5 bg-slate-50 text-slate-400 rounded-xl hover:text-indigo-600 active:bg-indigo-50 transition-colors"
-            >
-              <Download className="w-5 h-5" />
-            </button>
-          )}
         </div>
       </header>
 
-      {/* Warning if sync URL is missing */}
       {!config.googleSheetUrl && isInitialLoadDone && activeTab !== 'settings' && (
-        <div className="bg-amber-50 border-b border-amber-100 px-6 py-2 flex items-center gap-2">
+        <div className="bg-amber-50 dark:bg-amber-900/20 border-b border-amber-100 dark:border-amber-900/30 px-6 py-2 flex items-center gap-2">
           <AlertTriangle className="w-3 h-3 text-amber-600" />
-          <p className="text-[10px] font-bold text-amber-700 uppercase">Offline Mode: Sync URL not set in Setup</p>
+          <p className="text-[10px] font-bold text-amber-700 dark:text-amber-500 uppercase">Cloud Sync Required in Setup</p>
         </div>
       )}
 
       <main className="flex-1 p-6 overflow-y-auto overflow-x-hidden">
         {activeTab === 'dashboard' && <Dashboard summary={categorySummary} transactions={filteredTransactions} />}
         {activeTab === 'trends' && <Trends transactions={transactions} />}
-        {activeTab === 'transactions' && <Transactions transactions={filteredTransactions} onDelete={handleDeleteTransaction} />}
+        {activeTab === 'transactions' && <Transactions transactions={filteredTransactions} onDelete={handleDeleteTransaction} currentUserId={currentUser.id} />}
         {activeTab === 'summary' && <Summary summary={categorySummary} />}
         {activeTab === 'settings' && (
           <Settings 
@@ -279,12 +302,14 @@ const App: React.FC = () => {
             onUpdate={handleUpdateSettings} 
             config={config} 
             onUpdateConfig={handleUpdateConfig}
-            onSync={handleManualSync}
+            onSync={() => performFullSync(config.googleSheetUrl, transactions, settings)}
+            onLogout={handleLogout}
+            currentUser={currentUser}
           />
         )}
       </main>
 
-      <nav className="fixed bottom-0 left-0 right-0 max-w-lg mx-auto bg-white/95 backdrop-blur-md border-t border-slate-100 flex justify-around items-center h-20 px-2 z-40 pb-safe shadow-[0_-4px_10px_rgba(0,0,0,0.03)]">
+      <nav className="fixed bottom-0 left-0 right-0 max-w-lg mx-auto bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-100 dark:border-slate-800 flex justify-around items-center h-20 px-2 z-40 pb-safe shadow-[0_-4px_10px_rgba(0,0,0,0.03)]">
         <NavButton active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} icon={<LayoutDashboard />} label="Board" />
         <NavButton active={activeTab === 'trends'} onClick={() => setActiveTab('trends')} icon={<TrendingUp />} label="Trends" />
         
@@ -292,10 +317,10 @@ const App: React.FC = () => {
           <button 
             disabled={!isInitialLoadDone || isSyncing}
             onClick={() => setIsModalOpen(true)}
-            className={`w-16 h-16 rounded-3xl shadow-xl flex items-center justify-center transition-all border-4 border-white ${
+            className={`w-16 h-16 rounded-3xl shadow-xl flex items-center justify-center transition-all border-4 border-white dark:border-slate-900 ${
               !isInitialLoadDone || isSyncing 
-              ? 'bg-slate-300 text-slate-100' 
-              : 'bg-indigo-600 text-white shadow-indigo-300 hover:scale-105 active:scale-90'
+              ? 'bg-slate-300 dark:bg-slate-800 text-slate-100 dark:text-slate-700' 
+              : 'bg-indigo-600 text-white shadow-indigo-300 dark:shadow-indigo-900/20 hover:scale-105 active:scale-90'
             }`}
           >
             <Plus className={`w-8 h-8 ${isSyncing ? 'animate-pulse' : ''}`} />
@@ -317,18 +342,11 @@ const App: React.FC = () => {
   );
 };
 
-interface NavButtonProps {
-  active: boolean;
-  onClick: () => void;
-  icon: React.ReactNode;
-  label: string;
-}
-
-const NavButton: React.FC<NavButtonProps> = ({ active, onClick, icon, label }) => (
+const NavButton: React.FC<{ active: boolean; onClick: () => void; icon: React.ReactNode; label: string; }> = ({ active, onClick, icon, label }) => (
   <button 
     onClick={onClick}
     className={`flex flex-col items-center gap-1 transition-all flex-1 py-2 active:scale-95 ${
-      active ? 'text-indigo-600' : 'text-slate-400'
+      active ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400 dark:text-slate-600'
     }`}
   >
     <div className={`transition-transform duration-200 ${active ? 'scale-110' : 'scale-100'}`}>
