@@ -50,7 +50,16 @@ export const saveAppConfig = (config: AppConfig) => {
 
 export const loadAppConfig = (): AppConfig => {
   const data = localStorage.getItem(STORAGE_KEYS.CONFIG);
-  return data ? JSON.parse(data) : { googleSheetUrl: '' };
+  const defaultConfig: AppConfig = { googleSheetUrl: '', theme: 'light' };
+  
+  if (!data) return defaultConfig;
+  
+  try {
+    const parsed = JSON.parse(data);
+    return { ...defaultConfig, ...parsed };
+  } catch {
+    return defaultConfig;
+  }
 };
 
 export const downloadCSV = (data: any[], filename: string) => {

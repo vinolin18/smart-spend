@@ -46,10 +46,7 @@ const App: React.FC = () => {
   });
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [settings, setSettings] = useState<MasterSetting[]>([]);
-  const [config, setConfig] = useState<AppConfig>(() => {
-    const saved = loadAppConfig();
-    return { ...saved, theme: saved.theme || 'light' };
-  });
+  const [config, setConfig] = useState<AppConfig>(() => loadAppConfig());
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isInitialLoadDone, setIsInitialLoadDone] = useState(false);
