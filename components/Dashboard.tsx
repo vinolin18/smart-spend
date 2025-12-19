@@ -8,8 +8,6 @@ import { CategorySummary } from '../types';
 
 interface DashboardProps {
   summary: CategorySummary[];
-  // transactions prop is kept for interface compatibility if needed later, 
-  // though not used in current render logic
   transactions: any[]; 
 }
 

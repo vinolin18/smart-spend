@@ -18,7 +18,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          # Removed the cache: 'npm' line because package-lock.json is missing
       - run: npm install
       - run: npm run build
       - name: Setup Pages
