@@ -4,6 +4,7 @@ import {
   PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend,
   BarChart, Bar, XAxis, YAxis, CartesianGrid
 } from 'recharts';
+import { ReceiptText } from 'lucide-react';
 import { Transaction, CategorySummary, RecordType } from '../types';
 
 interface DashboardProps {
@@ -121,6 +122,3 @@ export const Dashboard: React.FC<DashboardProps> = ({ summary, transactions }) =
     </div>
   );
 };
-
-// Help helper for icons
-import { ReceiptText } from 'lucide-react';
