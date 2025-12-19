@@ -36,11 +36,9 @@ const App: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   
-  // Current month for filtering
   const todayKey = new Date().toLocaleString('default', { month: 'short', year: 'numeric' }).replace(' ', '-');
   const [selectedMonth, setSelectedMonth] = useState(todayKey);
 
-  // Initialize data
   useEffect(() => {
     const storedTransactions = loadTransactions();
     const storedSettings = loadSettings();
@@ -57,7 +55,6 @@ const App: React.FC = () => {
     }
   }, []);
 
-  // Centralized Sync Function that can be called programmatically
   const performSync = async (txs: Transaction[], sets: MasterSetting[]) => {
     if (!config.googleSheetUrl) return;
     
@@ -89,7 +86,6 @@ const App: React.FC = () => {
     const updated = [t, ...transactions];
     setTransactions(updated);
     saveTransactions(updated);
-    // Auto-sync
     performSync(updated, settings);
   };
 
@@ -97,14 +93,12 @@ const App: React.FC = () => {
     const updated = transactions.filter(t => t.id !== id);
     setTransactions(updated);
     saveTransactions(updated);
-    // Auto-sync
     performSync(updated, settings);
   };
 
   const handleUpdateSettings = (newSettings: MasterSetting[]) => {
     setSettings(newSettings);
     saveSettings(newSettings);
-    // Settings changes also trigger sync
     performSync(transactions, newSettings);
   };
 
@@ -122,7 +116,6 @@ const App: React.FC = () => {
     alert('Cloud sync completed!');
   };
 
-  // Month list for dropdown
   const monthList = useMemo(() => {
     const list = new Set<string>();
     list.add(todayKey);
@@ -134,14 +127,12 @@ const App: React.FC = () => {
     });
   }, [transactions, todayKey]);
 
-  // Derived filtered data
   const filteredTransactions = useMemo(() => {
     return transactions.filter(t => t.monthYear === selectedMonth);
   }, [transactions, selectedMonth]);
 
   const categorySummary = useMemo<CategorySummary[]>(() => {
     const relevantTransactions = filteredTransactions.filter(t => t.recordType === RecordType.EXPENSE);
-
     const mainCategories = Array.from(new Set(settings
       .filter(s => s.recordType === RecordType.EXPENSE)
       .map(s => s.mainCategory)));
@@ -150,37 +141,28 @@ const App: React.FC = () => {
       const actualSpend = relevantTransactions
         .filter(t => t.mainCategory === cat)
         .reduce((sum, t) => sum + t.amount, 0);
-      
       const plannedCap = settings
         .filter(s => s.mainCategory === cat && s.recordType === RecordType.EXPENSE)
         .reduce((sum, s) => sum + s.monthlyCap, 0);
-
       const variance = plannedCap - actualSpend;
       const status = actualSpend > plannedCap ? 'ALERT' : 'OK';
 
-      return {
-        mainCategory: cat,
-        actualSpend,
-        plannedCap,
-        variance,
-        status
-      };
+      return { mainCategory: cat, actualSpend, plannedCap, variance, status };
     });
   }, [filteredTransactions, settings]);
 
   const handleDownload = () => {
     if (activeTab === 'transactions') {
       downloadCSV(filteredTransactions, `transactions_${selectedMonth}`);
-    } else if (activeTab === 'summary' || activeTab === 'dashboard') {
+    } else {
       downloadCSV(categorySummary, `summary_${selectedMonth}`);
     }
   };
 
   return (
     <div className="min-h-screen max-w-lg mx-auto bg-slate-50 flex flex-col relative shadow-xl shadow-slate-200">
-      {/* Header */}
-      <header className="sticky top-0 z-30 bg-white px-6 py-4 border-b border-slate-100 flex justify-between items-center shadow-sm shadow-slate-50">
-        <div>
+      <header className="sticky top-0 z-30 bg-white px-6 py-4 border-b border-slate-100 flex justify-between items-center shadow-sm">
+        <div className="pt-safe">
           <h1 className="text-xl font-black text-slate-800 tracking-tight">SmartSpend</h1>
           <div className="flex items-center gap-2 mt-1">
             <div className="relative inline-block">
@@ -202,12 +184,11 @@ const App: React.FC = () => {
           </div>
         </div>
         
-        <div className="flex gap-2">
+        <div className="flex gap-2 pt-safe">
           {(activeTab === 'dashboard' || activeTab === 'transactions' || activeTab === 'summary') && (
             <button 
               onClick={handleDownload}
-              className="p-2.5 bg-slate-50 text-slate-400 rounded-xl hover:text-indigo-600 transition-colors"
-              title="Download Report"
+              className="p-2.5 bg-slate-50 text-slate-400 rounded-xl hover:text-indigo-600 active:bg-indigo-50 transition-colors"
             >
               <Download className="w-5 h-5" />
             </button>
@@ -215,8 +196,7 @@ const App: React.FC = () => {
         </div>
       </header>
 
-      {/* Main Content Area */}
-      <main className="flex-1 p-6 overflow-y-auto">
+      <main className="flex-1 p-6 overflow-y-auto overflow-x-hidden">
         {activeTab === 'dashboard' && <Dashboard summary={categorySummary} transactions={filteredTransactions} />}
         {activeTab === 'trends' && <Trends transactions={transactions} />}
         {activeTab === 'transactions' && <Transactions transactions={filteredTransactions} onDelete={handleDeleteTransaction} />}
@@ -232,18 +212,17 @@ const App: React.FC = () => {
         )}
       </main>
 
-      {/* Bottom Nav */}
-      <nav className="fixed bottom-0 left-0 right-0 max-w-lg mx-auto bg-white/95 backdrop-blur-md border-t border-slate-100 flex justify-around items-center h-20 px-2 z-40 pb-2">
+      {/* Bottom Nav Optimized for Mobile */}
+      <nav className="fixed bottom-0 left-0 right-0 max-w-lg mx-auto bg-white/95 backdrop-blur-md border-t border-slate-100 flex justify-around items-center h-20 px-2 z-40 pb-safe shadow-[0_-4px_10px_rgba(0,0,0,0.03)]">
         <NavButton active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} icon={<LayoutDashboard />} label="Board" />
         <NavButton active={activeTab === 'trends'} onClick={() => setActiveTab('trends')} icon={<TrendingUp />} label="Trends" />
         
-        {/* FAB */}
-        <div className="relative -top-6">
+        <div className="relative -top-8">
           <button 
             onClick={() => setIsModalOpen(true)}
-            className="w-14 h-14 bg-indigo-600 text-white rounded-2xl shadow-lg shadow-indigo-300 flex items-center justify-center transition-all hover:scale-110 active:scale-95 border-2 border-white rotate-45"
+            className="w-16 h-16 bg-indigo-600 text-white rounded-3xl shadow-xl shadow-indigo-300 flex items-center justify-center transition-all hover:scale-105 active:scale-90 border-4 border-white"
           >
-            <Plus className="w-8 h-8 -rotate-45" />
+            <Plus className="w-8 h-8" />
           </button>
         </div>
 
@@ -272,14 +251,14 @@ interface NavButtonProps {
 const NavButton: React.FC<NavButtonProps> = ({ active, onClick, icon, label }) => (
   <button 
     onClick={onClick}
-    className={`flex flex-col items-center gap-1 transition-all flex-1 py-2 ${
-      active ? 'text-indigo-600' : 'text-slate-400 hover:text-slate-500'
+    className={`flex flex-col items-center gap-1 transition-all flex-1 py-2 active:scale-95 ${
+      active ? 'text-indigo-600' : 'text-slate-400'
     }`}
   >
     <div className={`transition-transform duration-200 ${active ? 'scale-110' : 'scale-100'}`}>
-      {React.cloneElement(icon as React.ReactElement<any>, { size: 20 })}
+      {React.cloneElement(icon as React.ReactElement<any>, { size: 24 })}
     </div>
-    <span className="text-[9px] font-bold uppercase tracking-wider">{label}</span>
+    <span className="text-[9px] font-bold uppercase tracking-widest">{label}</span>
   </button>
 );
 
