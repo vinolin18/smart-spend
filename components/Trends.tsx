@@ -1,7 +1,7 @@
 
 import React from 'react';
 import { 
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area 
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area 
 } from 'recharts';
 import { Transaction, RecordType } from '../types';
 
@@ -35,6 +35,11 @@ export const Trends: React.FC<TrendsProps> = ({ transactions }) => {
   const totalPeriodSpend = monthlyData.reduce((acc, m) => acc + m.spend, 0);
   const avgSpend = totalPeriodSpend / (monthlyData.length || 1);
 
+  // Safely find highest spend month
+  const highestSpendMonth = monthlyData.length > 0 
+    ? monthlyData.reduce((prev, curr) => prev.spend > curr.spend ? prev : curr).month 
+    : 'N/A';
+
   return (
     <div className="space-y-6 pb-20">
       <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
@@ -60,7 +65,7 @@ export const Trends: React.FC<TrendsProps> = ({ transactions }) => {
               <YAxis hide />
               <Tooltip 
                 contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                formatter={(value: number) => [`₹${value.toLocaleString()}`, 'Spent']}
+                formatter={(value: any) => [`₹${Number(value).toLocaleString()}`, 'Spent']}
               />
               <Area 
                 type="monotone" 
@@ -91,7 +96,7 @@ export const Trends: React.FC<TrendsProps> = ({ transactions }) => {
         <ul className="space-y-2">
           <li className="text-xs text-indigo-700 flex gap-2">
             <span className="w-1.5 h-1.5 bg-indigo-400 rounded-full mt-1 shrink-0"></span>
-            Your highest spend was in {monthlyData.reduce((prev, curr) => prev.spend > curr.spend ? prev : curr).month}.
+            Your highest spend was in {highestSpendMonth}.
           </li>
           <li className="text-xs text-indigo-700 flex gap-2">
             <span className="w-1.5 h-1.5 bg-indigo-400 rounded-full mt-1 shrink-0"></span>

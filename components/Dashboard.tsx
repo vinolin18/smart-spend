@@ -1,20 +1,21 @@
 
 import React from 'react';
 import { 
-  PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend,
-  BarChart, Bar, XAxis, YAxis, CartesianGrid
+  PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend
 } from 'recharts';
 import { ReceiptText } from 'lucide-react';
-import { Transaction, CategorySummary, RecordType } from '../types';
+import { CategorySummary } from '../types';
 
 interface DashboardProps {
   summary: CategorySummary[];
-  transactions: Transaction[];
+  // transactions prop is kept for interface compatibility if needed later, 
+  // though not used in current render logic
+  transactions: any[]; 
 }
 
 const COLORS = ['#6366f1', '#ec4899', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ef4444'];
 
-export const Dashboard: React.FC<DashboardProps> = ({ summary, transactions }) => {
+export const Dashboard: React.FC<DashboardProps> = ({ summary }) => {
   const pieData = summary
     .filter(s => s.actualSpend > 0)
     .map((s, index) => ({
@@ -81,7 +82,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ summary, transactions }) =
                 </Pie>
                 <Tooltip 
                   contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
-                  formatter={(value: number) => `₹${value.toLocaleString()}`}
+                  formatter={(value: any) => `₹${Number(value).toLocaleString()}`}
                 />
                 <Legend verticalAlign="bottom" height={36} iconType="circle" iconSize={8} wrapperStyle={{ fontSize: '10px', fontWeight: 'bold' }} />
               </PieChart>
