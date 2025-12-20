@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   RecordType, Transaction, MasterSetting, AppTab, CategorySummary, AppConfig, User 
@@ -59,7 +60,7 @@ const App: React.FC = () => {
     }
   }, [config.theme]);
 
-  // Robust Atomic Sync: Always pulls latest from cloud, merges locally, then pushes combined state.
+  // Robust Atomic Sync: Pull -> Merge -> Push
   const performFullSync = useCallback(async (
     url: string, 
     actionToApply?: { 
@@ -67,20 +68,18 @@ const App: React.FC = () => {
       setUpdate?: (sets: MasterSetting[]) => MasterSetting[] 
     }
   ) => {
-    if (!url) return;
+    if (!url || isSyncing) return;
     setIsSyncing(true);
     
-    // We start with current state as a fallback
     let currentTxs = loadTransactions();
     let currentSets = loadSettings();
 
     try {
-      // 1. PULL: Fetch absolute latest from Source of Truth (Cloud)
+      // 1. PULL absolute latest from Source of Truth (Cloud)
       const response = await fetch(`${url}?t=${Date.now()}`);
       if (response.ok) {
         const cloudData = await response.json();
         if (cloudData) {
-          // MERGE: Combine what's in the cloud with any local unsynced data
           if (cloudData.transactions) {
             currentTxs = mergeTransactions(currentTxs, cloudData.transactions);
           }
@@ -90,20 +89,20 @@ const App: React.FC = () => {
         }
       }
     } catch (error) {
-      console.warn("Pull phase failed, syncing based on local state.");
+      console.warn("Pull phase failed, relying on local state.");
     }
 
-    // 2. APPLY CHANGE: Perform the specific action (like adding a new record)
+    // 2. APPLY local change to the pulled truth
     if (actionToApply?.txUpdate) currentTxs = actionToApply.txUpdate(currentTxs);
     if (actionToApply?.setUpdate) currentSets = actionToApply.setUpdate(currentSets);
 
-    // 3. PERSIST LOCALLY: Update UI immediately
+    // 3. PERSIST LOCALLY
     setTransactions(currentTxs);
     setSettings(currentSets);
     saveTransactions(currentTxs);
     saveSettings(currentSets);
 
-    // 4. PUSH: Overwrite cloud with the new "Full Truth"
+    // 4. PUSH combined truth back to Cloud
     try {
       await fetch(url, {
         method: 'POST',
@@ -124,8 +123,9 @@ const App: React.FC = () => {
     } finally {
       setIsSyncing(false);
     }
-  }, [config]);
+  }, [config, isSyncing]);
 
+  // Initial Pull on startup
   useEffect(() => {
     const storedTransactions = loadTransactions();
     const storedSettings = loadSettings().length > 0 ? loadSettings() : DEFAULT_MASTER_SETTINGS;
@@ -139,13 +139,10 @@ const App: React.FC = () => {
     } else {
       setIsInitialLoadDone(true);
     }
-  }, [config.googleSheetUrl, performFullSync]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config.googleSheetUrl]);
 
-  useEffect(() => {
-    if (isInitialLoadDone && config.googleSheetUrl && !isSyncing) {
-      performFullSync(config.googleSheetUrl);
-    }
-  }, [activeTab]);
+  // Removed the Tab-switch auto-sync to stop the loop
 
   const handleAddTransaction = (t: Transaction) => {
     if (!currentUser) return;
@@ -157,7 +154,10 @@ const App: React.FC = () => {
 
   const handleDeleteTransaction = (id: string) => {
     const tx = transactions.find(t => t.id === id);
-    if (!tx || !currentUser || tx.userId !== currentUser.id) return;
+    if (!tx || !currentUser || tx.userId !== currentUser.id) {
+      if (tx && tx.userId !== currentUser?.id) alert("Cannot delete other user's records.");
+      return;
+    }
 
     performFullSync(config.googleSheetUrl, {
       txUpdate: (current) => current.filter(t => t.id !== id)
@@ -213,7 +213,7 @@ const App: React.FC = () => {
   const monthList = useMemo(() => {
     const list = new Set<string>();
     list.add(todayKey);
-    transactions.forEach(t => list.add(t.monthYear));
+    transactions.forEach(t => { if(t.monthYear) list.add(t.monthYear) });
     return Array.from(list).sort((a, b) => {
       const dateA = new Date(a.replace('-', ' '));
       const dateB = new Date(b.replace('-', ' '));
@@ -263,7 +263,11 @@ const App: React.FC = () => {
           <button onClick={toggleTheme} className="p-2.5 bg-slate-50 dark:bg-slate-800 text-slate-400 rounded-xl">
             {config.theme === 'light' ? <Moon size={20} /> : <Sun size={20} />}
           </button>
-          <button onClick={() => performFullSync(config.googleSheetUrl)} className="p-2.5 bg-slate-50 dark:bg-slate-800 text-slate-400 rounded-xl">
+          <button 
+            disabled={isSyncing}
+            onClick={() => performFullSync(config.googleSheetUrl)} 
+            className={`p-2.5 bg-slate-50 dark:bg-slate-800 text-slate-400 rounded-xl transition-all ${isSyncing ? 'opacity-50' : 'active:scale-90'}`}
+          >
             <RefreshCcw className={`w-5 h-5 ${isSyncing ? 'animate-spin' : ''}`} />
           </button>
         </div>
@@ -292,7 +296,11 @@ const App: React.FC = () => {
         <NavButton active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} icon={<LayoutDashboard />} label="Board" />
         <NavButton active={activeTab === 'trends'} onClick={() => setActiveTab('trends')} icon={<TrendingUp />} label="Trends" />
         <div className="relative -top-8">
-          <button onClick={() => setIsModalOpen(true)} className="w-16 h-16 rounded-3xl bg-indigo-600 text-white shadow-xl flex items-center justify-center border-4 border-white dark:border-slate-900 active:scale-90 transition-transform">
+          <button 
+            disabled={isSyncing}
+            onClick={() => setIsModalOpen(true)} 
+            className="w-16 h-16 rounded-3xl bg-indigo-600 text-white shadow-xl flex items-center justify-center border-4 border-white dark:border-slate-900 active:scale-90 transition-transform disabled:bg-slate-300"
+          >
             <Plus className="w-8 h-8" />
           </button>
         </div>
