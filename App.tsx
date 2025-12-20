@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   RecordType, Transaction, MasterSetting, AppTab, CategorySummary, AppConfig, User 
@@ -60,11 +59,9 @@ const App: React.FC = () => {
     }
   }, [config.theme]);
 
-  // The Atomic Sync Function: Pull latest, Merge local, Push back.
+  // Robust Atomic Sync: Always pulls latest from cloud, merges locally, then pushes combined state.
   const performFullSync = useCallback(async (
     url: string, 
-    currentLocalTxs: Transaction[], 
-    currentLocalSets: MasterSetting[],
     actionToApply?: { 
       txUpdate?: (txs: Transaction[]) => Transaction[], 
       setUpdate?: (sets: MasterSetting[]) => MasterSetting[] 
@@ -73,39 +70,40 @@ const App: React.FC = () => {
     if (!url) return;
     setIsSyncing(true);
     
-    let latestTxs = [...currentLocalTxs];
-    let latestSets = [...currentLocalSets];
+    // We start with current state as a fallback
+    let currentTxs = loadTransactions();
+    let currentSets = loadSettings();
 
     try {
-      // 1. PULL: Get latest from cloud with cache busting
+      // 1. PULL: Fetch absolute latest from Source of Truth (Cloud)
       const response = await fetch(`${url}?t=${Date.now()}`);
       if (response.ok) {
         const cloudData = await response.json();
         if (cloudData) {
+          // MERGE: Combine what's in the cloud with any local unsynced data
           if (cloudData.transactions) {
-            // MERGE: Combine local with cloud data using unique IDs
-            latestTxs = mergeTransactions(currentLocalTxs, cloudData.transactions);
+            currentTxs = mergeTransactions(currentTxs, cloudData.transactions);
           }
           if (cloudData.settings && cloudData.settings.length > 0) {
-            latestSets = cloudData.settings;
+            currentSets = cloudData.settings;
           }
         }
       }
     } catch (error) {
-      console.warn("Pull failed, using existing local data for merge.", error);
+      console.warn("Pull phase failed, syncing based on local state.");
     }
 
-    // 2. APPLY: Add the user's new record to the combined list
-    if (actionToApply?.txUpdate) latestTxs = actionToApply.txUpdate(latestTxs);
-    if (actionToApply?.setUpdate) latestSets = actionToApply.setUpdate(latestSets);
+    // 2. APPLY CHANGE: Perform the specific action (like adding a new record)
+    if (actionToApply?.txUpdate) currentTxs = actionToApply.txUpdate(currentTxs);
+    if (actionToApply?.setUpdate) currentSets = actionToApply.setUpdate(currentSets);
 
-    // 3. SAVE LOCALLY
-    setTransactions(latestTxs);
-    setSettings(latestSets);
-    saveTransactions(latestTxs);
-    saveSettings(latestSets);
+    // 3. PERSIST LOCALLY: Update UI immediately
+    setTransactions(currentTxs);
+    setSettings(currentSets);
+    saveTransactions(currentTxs);
+    saveSettings(currentSets);
 
-    // 4. PUSH: Overwrite cloud with the new full truth
+    // 4. PUSH: Overwrite cloud with the new "Full Truth"
     try {
       await fetch(url, {
         method: 'POST',
@@ -113,8 +111,8 @@ const App: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'sync',
-          transactions: latestTxs,
-          settings: latestSets
+          transactions: currentTxs,
+          settings: currentSets
         })
       });
       
@@ -122,71 +120,53 @@ const App: React.FC = () => {
       setConfig(newConfig);
       saveAppConfig(newConfig);
     } catch (error) {
-      console.error("Push failed", error);
+      console.error("Cloud push failed", error);
     } finally {
       setIsSyncing(false);
     }
   }, [config]);
 
-  // Load and pull on startup
   useEffect(() => {
     const storedTransactions = loadTransactions();
-    const storedSettings = loadSettings();
+    const storedSettings = loadSettings().length > 0 ? loadSettings() : DEFAULT_MASTER_SETTINGS;
     
     setTransactions(storedTransactions);
-    
-    if (storedSettings.length > 0) {
-      setSettings(storedSettings);
-    } else {
-      setSettings(DEFAULT_MASTER_SETTINGS);
-      saveSettings(DEFAULT_MASTER_SETTINGS);
-    }
+    setSettings(storedSettings);
 
     if (config.googleSheetUrl) {
-      performFullSync(config.googleSheetUrl, storedTransactions, storedSettings)
+      performFullSync(config.googleSheetUrl)
         .finally(() => setIsInitialLoadDone(true));
     } else {
       setIsInitialLoadDone(true);
     }
   }, [config.googleSheetUrl, performFullSync]);
 
-  // Pull updates when switching tabs
   useEffect(() => {
     if (isInitialLoadDone && config.googleSheetUrl && !isSyncing) {
-      performFullSync(config.googleSheetUrl, transactions, settings);
+      performFullSync(config.googleSheetUrl);
     }
   }, [activeTab]);
 
   const handleAddTransaction = (t: Transaction) => {
     if (!currentUser) return;
-    const enrichedTransaction = { 
-      ...t, 
-      userId: currentUser.id, 
-      userName: currentUser.name 
-    };
-    // Atomic update
-    performFullSync(config.googleSheetUrl, transactions, settings, {
+    const enrichedTransaction = { ...t, userId: currentUser.id, userName: currentUser.name };
+    performFullSync(config.googleSheetUrl, {
       txUpdate: (current) => [enrichedTransaction, ...current]
     });
   };
 
   const handleDeleteTransaction = (id: string) => {
     const tx = transactions.find(t => t.id === id);
-    if (!tx || !currentUser) return;
-    
-    if (tx.userId !== currentUser.id) {
-      alert("You can only delete your own records!");
-      return;
-    }
+    if (!tx || !currentUser || tx.userId !== currentUser.id) return;
 
-    performFullSync(config.googleSheetUrl, transactions, settings, {
+    performFullSync(config.googleSheetUrl, {
       txUpdate: (current) => current.filter(t => t.id !== id)
     });
   };
 
   const handleHardReset = async () => {
     if (!config.googleSheetUrl) return;
-    if (!confirm("Are you sure? This will delete ALL records in the Google Sheet for everyone.")) return;
+    if (!confirm("Wipe all cloud data? This clears the sheet for EVERYONE.")) return;
 
     setIsSyncing(true);
     try {
@@ -196,24 +176,18 @@ const App: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'reset' })
       });
-
       setTransactions([]);
       setSettings(DEFAULT_MASTER_SETTINGS);
       saveTransactions([]);
       saveSettings(DEFAULT_MASTER_SETTINGS);
-      
-      alert("System Reset: All transactions cleared.");
-    } catch (err) {
-      alert("Failed to communicate with cloud. Please check script URL.");
+      alert("Cloud reset complete.");
     } finally {
       setIsSyncing(false);
     }
   };
 
   const handleUpdateSettings = (newSettings: MasterSetting[]) => {
-    performFullSync(config.googleSheetUrl, transactions, settings, {
-      setUpdate: () => newSettings
-    });
+    performFullSync(config.googleSheetUrl, { setUpdate: () => newSettings });
   };
 
   const handleUpdateConfig = (newConfig: AppConfig) => {
@@ -247,46 +221,34 @@ const App: React.FC = () => {
     });
   }, [transactions, todayKey]);
 
-  const filteredTransactions = useMemo(() => {
-    return transactions.filter(t => t.monthYear === selectedMonth);
-  }, [transactions, selectedMonth]);
+  const filteredTransactions = useMemo(() => transactions.filter(t => t.monthYear === selectedMonth), [transactions, selectedMonth]);
 
   const categorySummary = useMemo<CategorySummary[]>(() => {
     const relevantTransactions = filteredTransactions.filter(t => t.recordType === RecordType.EXPENSE);
-    const mainCategories = Array.from(new Set(settings
-      .filter(s => s.recordType === RecordType.EXPENSE)
-      .map(s => s.mainCategory)));
+    const mainCategories = Array.from(new Set(settings.filter(s => s.recordType === RecordType.EXPENSE).map(s => s.mainCategory)));
 
     return mainCategories.map(cat => {
-      const actualSpend = relevantTransactions
-        .filter(t => t.mainCategory === cat)
-        .reduce((sum, t) => sum + t.amount, 0);
-      const plannedCap = settings
-        .filter(s => s.mainCategory === cat && s.recordType === RecordType.EXPENSE)
-        .reduce((sum, s) => sum + s.monthlyCap, 0);
+      const actualSpend = relevantTransactions.filter(t => t.mainCategory === cat).reduce((sum, t) => sum + t.amount, 0);
+      const plannedCap = settings.filter(s => s.mainCategory === cat && s.recordType === RecordType.EXPENSE).reduce((sum, s) => sum + s.monthlyCap, 0);
       const variance = plannedCap - actualSpend;
       const status = actualSpend > plannedCap ? 'ALERT' : 'OK';
-
       return { mainCategory: cat, actualSpend, plannedCap, variance, status };
     });
   }, [filteredTransactions, settings]);
 
-  if (!currentUser) {
-    return <Login users={USERS} onLogin={handleLogin} />;
-  }
+  if (!currentUser) return <Login users={USERS} onLogin={handleLogin} />;
 
   return (
-    <div className="min-h-screen max-w-lg mx-auto bg-slate-50 dark:bg-slate-950 flex flex-col relative shadow-xl shadow-slate-200 dark:shadow-none transition-colors">
+    <div className="min-h-screen max-w-lg mx-auto bg-slate-50 dark:bg-slate-950 flex flex-col relative shadow-xl transition-colors">
       <header className="sticky top-0 z-30 bg-white dark:bg-slate-900 px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center shadow-sm">
         <div className="pt-safe">
-          <h1 className="text-xl font-black text-slate-800 dark:text-slate-100 tracking-tight flex items-center gap-2">
-            SmartSpend
-            <span className="text-[10px] bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-400 px-1.5 py-0.5 rounded-md font-bold uppercase tracking-widest">PRO</span>
+          <h1 className="text-xl font-black text-slate-800 dark:text-slate-100 flex items-center gap-2">
+            SmartSpend <span className="text-[10px] bg-indigo-100 text-indigo-600 px-1.5 py-0.5 rounded-md font-bold uppercase tracking-widest">PRO</span>
           </h1>
           <div className="flex items-center gap-2 mt-1">
             <div className="relative inline-block">
               <select 
-                className="appearance-none bg-indigo-50 dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 text-[10px] font-bold py-1 px-3 pr-6 rounded-full border-none focus:ring-1 focus:ring-indigo-300"
+                className="appearance-none bg-indigo-50 dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 text-[10px] font-bold py-1 px-3 pr-6 rounded-full border-none"
                 value={selectedMonth}
                 onChange={e => setSelectedMonth(e.target.value)}
               >
@@ -294,40 +256,20 @@ const App: React.FC = () => {
               </select>
               <ChevronDown className="absolute right-2 top-1.5 w-3 h-3 text-indigo-400 pointer-events-none" />
             </div>
-            {isSyncing && (
-              <div className="flex items-center gap-1 animate-pulse">
-                <CloudLightning className="w-3 h-3 text-amber-500" />
-                <span className="text-[8px] font-bold text-slate-400 dark:text-slate-500 uppercase">Syncing...</span>
-              </div>
-            )}
+            {isSyncing && <CloudLightning className="w-3 h-3 text-amber-500 animate-pulse" />}
           </div>
         </div>
-        
-        <div className="flex gap-2 pt-safe">
-          <button 
-            onClick={toggleTheme}
-            className="p-2.5 bg-slate-50 dark:bg-slate-800 text-slate-400 dark:text-slate-500 rounded-xl hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
-          >
+        <div className="flex gap-2">
+          <button onClick={toggleTheme} className="p-2.5 bg-slate-50 dark:bg-slate-800 text-slate-400 rounded-xl">
             {config.theme === 'light' ? <Moon size={20} /> : <Sun size={20} />}
           </button>
-          <button 
-            onClick={() => performFullSync(config.googleSheetUrl, transactions, settings)}
-            disabled={isSyncing}
-            className={`p-2.5 rounded-xl transition-all ${isSyncing ? 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-400' : 'bg-slate-50 dark:bg-slate-800 text-slate-400 dark:text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400'}`}
-          >
+          <button onClick={() => performFullSync(config.googleSheetUrl)} className="p-2.5 bg-slate-50 dark:bg-slate-800 text-slate-400 rounded-xl">
             <RefreshCcw className={`w-5 h-5 ${isSyncing ? 'animate-spin' : ''}`} />
           </button>
         </div>
       </header>
 
-      {!config.googleSheetUrl && isInitialLoadDone && activeTab !== 'settings' && (
-        <div className="bg-amber-50 dark:bg-amber-900/20 border-b border-amber-100 dark:border-amber-900/30 px-6 py-2 flex items-center gap-2">
-          <AlertTriangle className="w-3 h-3 text-amber-600" />
-          <p className="text-[10px] font-bold text-amber-700 dark:text-amber-500 uppercase">Cloud Sync Required in Setup</p>
-        </div>
-      )}
-
-      <main className="flex-1 p-6 overflow-y-auto overflow-x-hidden">
+      <main className="flex-1 p-6 overflow-y-auto">
         {activeTab === 'dashboard' && <Dashboard summary={categorySummary} transactions={filteredTransactions} />}
         {activeTab === 'trends' && <Trends transactions={transactions} />}
         {activeTab === 'transactions' && <Transactions transactions={filteredTransactions} onDelete={handleDeleteTransaction} currentUserId={currentUser.id} />}
@@ -338,7 +280,7 @@ const App: React.FC = () => {
             onUpdate={handleUpdateSettings} 
             config={config} 
             onUpdateConfig={handleUpdateConfig}
-            onSync={() => performFullSync(config.googleSheetUrl, transactions, settings)}
+            onSync={() => performFullSync(config.googleSheetUrl)}
             onLogout={handleLogout}
             currentUser={currentUser}
             onHardReset={handleHardReset}
@@ -346,50 +288,27 @@ const App: React.FC = () => {
         )}
       </main>
 
-      <nav className="fixed bottom-0 left-0 right-0 max-w-lg mx-auto bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-100 dark:border-slate-800 flex justify-around items-center h-20 px-2 z-40 pb-safe shadow-[0_-4px_10px_rgba(0,0,0,0.03)]">
+      <nav className="fixed bottom-0 left-0 right-0 max-w-lg mx-auto bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t flex justify-around items-center h-20 px-2 pb-safe z-40">
         <NavButton active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} icon={<LayoutDashboard />} label="Board" />
         <NavButton active={activeTab === 'trends'} onClick={() => setActiveTab('trends')} icon={<TrendingUp />} label="Trends" />
-        
         <div className="relative -top-8">
-          <button 
-            disabled={!isInitialLoadDone || isSyncing}
-            onClick={() => setIsModalOpen(true)}
-            className={`w-16 h-16 rounded-3xl shadow-xl flex items-center justify-center transition-all border-4 border-white dark:border-slate-900 ${
-              !isInitialLoadDone || isSyncing 
-              ? 'bg-slate-300 dark:bg-slate-800 text-slate-100 dark:text-slate-700' 
-              : 'bg-indigo-600 text-white shadow-indigo-300 dark:shadow-indigo-900/20 hover:scale-105 active:scale-90'
-            }`}
-          >
-            <Plus className={`w-8 h-8 ${isSyncing ? 'animate-pulse' : ''}`} />
+          <button onClick={() => setIsModalOpen(true)} className="w-16 h-16 rounded-3xl bg-indigo-600 text-white shadow-xl flex items-center justify-center border-4 border-white dark:border-slate-900 active:scale-90 transition-transform">
+            <Plus className="w-8 h-8" />
           </button>
         </div>
-
         <NavButton active={activeTab === 'transactions'} onClick={() => setActiveTab('transactions')} icon={<ReceiptText />} label="Daily" />
         <NavButton active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} icon={<SettingsIcon />} label="Setup" />
       </nav>
 
-      {isModalOpen && (
-        <AddTransactionModal 
-          onClose={() => setIsModalOpen(false)} 
-          onAdd={handleAddTransaction} 
-          settings={settings}
-        />
-      )}
+      {isModalOpen && <AddTransactionModal onClose={() => setIsModalOpen(false)} onAdd={handleAddTransaction} settings={settings} />}
     </div>
   );
 };
 
 const NavButton: React.FC<{ active: boolean; onClick: () => void; icon: React.ReactNode; label: string; }> = ({ active, onClick, icon, label }) => (
-  <button 
-    onClick={onClick}
-    className={`flex flex-col items-center gap-1 transition-all flex-1 py-2 active:scale-95 ${
-      active ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400 dark:text-slate-600'
-    }`}
-  >
-    <div className={`transition-transform duration-200 ${active ? 'scale-110' : 'scale-100'}`}>
-      {React.cloneElement(icon as React.ReactElement<any>, { size: 24 })}
-    </div>
-    <span className="text-[9px] font-bold uppercase tracking-widest">{label}</span>
+  <button onClick={onClick} className={`flex flex-col items-center gap-1 transition-all flex-1 py-2 ${active ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400'}`}>
+    {React.cloneElement(icon as React.ReactElement<any>, { size: 24 })}
+    <span className="text-[9px] font-bold uppercase">{label}</span>
   </button>
 );
 
