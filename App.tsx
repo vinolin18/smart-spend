@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   RecordType, Transaction, MasterSetting, AppTab, CategorySummary, AppConfig, User 
 } from './types';
@@ -8,7 +8,7 @@ import {
   loadTransactions, saveTransactions, 
   loadSettings, saveSettings, 
   loadAppConfig, saveAppConfig,
-  downloadCSV, mergeTransactions
+  mergeTransactions
 } from './utils/storage';
 import { Dashboard } from './components/Dashboard';
 import { Transactions } from './components/Transactions';
@@ -22,13 +22,11 @@ import {
   ReceiptText, 
   Settings as SettingsIcon,
   Plus,
-  Download,
   TrendingUp,
   ChevronDown,
   CloudLightning,
   RefreshCcw,
   AlertTriangle,
-  LogOut,
   Moon,
   Sun
 } from 'lucide-react';
@@ -54,7 +52,6 @@ const App: React.FC = () => {
   const todayKey = new Date().toLocaleString('default', { month: 'short', year: 'numeric' }).replace(' ', '-');
   const [selectedMonth, setSelectedMonth] = useState(todayKey);
 
-  // Apply theme to body
   useEffect(() => {
     if (config.theme === 'dark') {
       document.documentElement.classList.add('dark');
@@ -63,29 +60,8 @@ const App: React.FC = () => {
     }
   }, [config.theme]);
 
-  // Initial Data Load
-  useEffect(() => {
-    const storedTransactions = loadTransactions();
-    const storedSettings = loadSettings();
-    
-    setTransactions(storedTransactions);
-    
-    if (storedSettings.length > 0) {
-      setSettings(storedSettings);
-    } else {
-      setSettings(DEFAULT_MASTER_SETTINGS);
-      saveSettings(DEFAULT_MASTER_SETTINGS);
-    }
-
-    if (config.googleSheetUrl) {
-      performFullSync(config.googleSheetUrl, storedTransactions, storedSettings)
-        .finally(() => setIsInitialLoadDone(true));
-    } else {
-      setIsInitialLoadDone(true);
-    }
-  }, [config.googleSheetUrl]);
-
-  const performFullSync = async (
+  // The Atomic Sync Function: Pull latest, Merge local, Push back.
+  const performFullSync = useCallback(async (
     url: string, 
     currentLocalTxs: Transaction[], 
     currentLocalSets: MasterSetting[],
@@ -101,28 +77,35 @@ const App: React.FC = () => {
     let latestSets = [...currentLocalSets];
 
     try {
-      const response = await fetch(url);
+      // 1. PULL: Get latest from cloud with cache busting
+      const response = await fetch(`${url}?t=${Date.now()}`);
       if (response.ok) {
-        const cloudData = await response.ok ? await response.json() : null;
-        if (cloudData && cloudData.transactions) {
-          latestTxs = mergeTransactions(currentLocalTxs, cloudData.transactions);
-        }
-        if (cloudData && cloudData.settings && cloudData.settings.length > 0) {
-          latestSets = cloudData.settings;
+        const cloudData = await response.json();
+        if (cloudData) {
+          if (cloudData.transactions) {
+            // MERGE: Combine local with cloud data using unique IDs
+            latestTxs = mergeTransactions(currentLocalTxs, cloudData.transactions);
+          }
+          if (cloudData.settings && cloudData.settings.length > 0) {
+            latestSets = cloudData.settings;
+          }
         }
       }
     } catch (error) {
-      console.warn("Pull failed, using local merge.");
+      console.warn("Pull failed, using existing local data for merge.", error);
     }
 
+    // 2. APPLY: Add the user's new record to the combined list
     if (actionToApply?.txUpdate) latestTxs = actionToApply.txUpdate(latestTxs);
     if (actionToApply?.setUpdate) latestSets = actionToApply.setUpdate(latestSets);
 
+    // 3. SAVE LOCALLY
     setTransactions(latestTxs);
     setSettings(latestSets);
     saveTransactions(latestTxs);
     saveSettings(latestSets);
 
+    // 4. PUSH: Overwrite cloud with the new full truth
     try {
       await fetch(url, {
         method: 'POST',
@@ -143,7 +126,36 @@ const App: React.FC = () => {
     } finally {
       setIsSyncing(false);
     }
-  };
+  }, [config]);
+
+  // Load and pull on startup
+  useEffect(() => {
+    const storedTransactions = loadTransactions();
+    const storedSettings = loadSettings();
+    
+    setTransactions(storedTransactions);
+    
+    if (storedSettings.length > 0) {
+      setSettings(storedSettings);
+    } else {
+      setSettings(DEFAULT_MASTER_SETTINGS);
+      saveSettings(DEFAULT_MASTER_SETTINGS);
+    }
+
+    if (config.googleSheetUrl) {
+      performFullSync(config.googleSheetUrl, storedTransactions, storedSettings)
+        .finally(() => setIsInitialLoadDone(true));
+    } else {
+      setIsInitialLoadDone(true);
+    }
+  }, [config.googleSheetUrl, performFullSync]);
+
+  // Pull updates when switching tabs
+  useEffect(() => {
+    if (isInitialLoadDone && config.googleSheetUrl && !isSyncing) {
+      performFullSync(config.googleSheetUrl, transactions, settings);
+    }
+  }, [activeTab]);
 
   const handleAddTransaction = (t: Transaction) => {
     if (!currentUser) return;
@@ -152,6 +164,7 @@ const App: React.FC = () => {
       userId: currentUser.id, 
       userName: currentUser.name 
     };
+    // Atomic update
     performFullSync(config.googleSheetUrl, transactions, settings, {
       txUpdate: (current) => [enrichedTransaction, ...current]
     });
@@ -169,6 +182,32 @@ const App: React.FC = () => {
     performFullSync(config.googleSheetUrl, transactions, settings, {
       txUpdate: (current) => current.filter(t => t.id !== id)
     });
+  };
+
+  const handleHardReset = async () => {
+    if (!config.googleSheetUrl) return;
+    if (!confirm("Are you sure? This will delete ALL records in the Google Sheet for everyone.")) return;
+
+    setIsSyncing(true);
+    try {
+      await fetch(config.googleSheetUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reset' })
+      });
+
+      setTransactions([]);
+      setSettings(DEFAULT_MASTER_SETTINGS);
+      saveTransactions([]);
+      saveSettings(DEFAULT_MASTER_SETTINGS);
+      
+      alert("System Reset: All transactions cleared.");
+    } catch (err) {
+      alert("Failed to communicate with cloud. Please check script URL.");
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
   const handleUpdateSettings = (newSettings: MasterSetting[]) => {
@@ -302,6 +341,7 @@ const App: React.FC = () => {
             onSync={() => performFullSync(config.googleSheetUrl, transactions, settings)}
             onLogout={handleLogout}
             currentUser={currentUser}
+            onHardReset={handleHardReset}
           />
         )}
       </main>
